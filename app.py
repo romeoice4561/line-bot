@@ -203,7 +203,7 @@ def show(found, keyword):
 
     txt = f"📊 พบ {len(found)} รายการ\n\n"
 
-    for i, p in enumerate(found[:20], start=1):
+    for i, p in enumerate(found[:5], start=1):
 
         txt += f"""📌 รายการ {i}
 
