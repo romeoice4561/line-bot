@@ -50,6 +50,7 @@ def reply(reply_token, text):
     except:
         pass
 
+
 # ===============================
 # อ่านค่า Property ทุกชนิด
 # ===============================
@@ -125,6 +126,7 @@ def get_value(prop):
     except:
         return ""
 
+
 # ===============================
 # Query Notion
 # ===============================
@@ -148,6 +150,7 @@ def get_rows():
     except:
         return []
 
+
 # ===============================
 # Parse Row
 # ===============================
@@ -160,6 +163,7 @@ def parse(item):
         row[k] = get_value(props[k])
 
     return row
+
 
 # ===============================
 # SEARCH
@@ -178,6 +182,7 @@ def search(keyword):
             found.append(p)
 
     return found
+
 
 # ===============================
 # แสดงผลแบบละเอียด
@@ -232,6 +237,7 @@ def show(found, keyword):
 
     return txt[:5000]
 
+
 # ===============================
 # เมนู
 # ===============================
@@ -256,6 +262,7 @@ CMC0102
 🎯 สถานะ
 🌐 เครือข่าย
 """
+
 
 # ===============================
 # WEBHOOK
@@ -286,6 +293,7 @@ def webhook():
         print(traceback.format_exc())
         return "OK"
 
+
 # ===============================
 # HOME
 # ===============================
@@ -293,10 +301,10 @@ def webhook():
 def home():
     return "BOT RUNNING"
 
+
 # ===============================
 # RUN
 # ===============================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
