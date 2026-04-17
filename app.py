@@ -1,141 +1,159 @@
 from flask import Flask, request
 import requests
 import os
-import json
-from collections import Counter
+import traceback
 
 app = Flask(__name__)
 
-# =========================
+# ===============================
 # ENV
-# =========================
+# ===============================
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 DATABASE_ID = os.getenv("DATABASE_ID")
 
-LINE_URL = "https://api.line.me/v2/bot/message/reply"
-NOTION_VERSION = "2022-06-28"
+TIMEOUT = 8
 
-# =========================
-# HOME
-# =========================
-@app.route("/", methods=["GET"])
-def home():
-    return "SMART BOT RUNNING"
+# ===============================
+# HEADERS
+# ===============================
+NOTION_HEADERS = {
+    "Authorization": f"Bearer {NOTION_TOKEN}",
+    "Notion-Version": "2022-06-28",
+    "Content-Type": "application/json"
+}
 
-# =========================
-# LINE REPLY
-# =========================
+# ===============================
+# ส่งข้อความกลับ LINE
+# ===============================
 def reply(reply_token, text):
-    headers = {
-        "Authorization": f"Bearer {LINE_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    body = {
-        "replyToken": reply_token,
-        "messages": [{
-            "type": "text",
-            "text": text[:4900]
-        }]
-    }
-
-    requests.post(LINE_URL, headers=headers, json=body, timeout=15)
-
-# =========================
-# GET NOTION DATA ALL PAGE
-# =========================
-def get_rows():
-    url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
-
-    headers = {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Notion-Version": NOTION_VERSION,
-        "Content-Type": "application/json"
-    }
-
-    rows = []
-    has_more = True
-    cursor = None
-
-    while has_more:
-        payload = {}
-
-        if cursor:
-            payload["start_cursor"] = cursor
-
-        r = requests.post(url, headers=headers, json=payload, timeout=20)
-        data = r.json()
-
-        rows.extend(data.get("results", []))
-        has_more = data.get("has_more", False)
-        cursor = data.get("next_cursor")
-
-    return rows
-
-# =========================
-# READ NOTION VALUE
-# =========================
-def get_value(prop):
-    t = prop["type"]
-
     try:
+        url = "https://api.line.me/v2/bot/message/reply"
+
+        headers = {
+            "Authorization": f"Bearer {LINE_TOKEN}",
+            "Content-Type": "application/json"
+        }
+
+        body = {
+            "replyToken": reply_token,
+            "messages": [
+                {
+                    "type": "text",
+                    "text": text[:5000]
+                }
+            ]
+        }
+
+        requests.post(url, headers=headers, json=body, timeout=TIMEOUT)
+
+    except:
+        pass
+
+# ===============================
+# อ่านค่า Property ทุกชนิด
+# ===============================
+def get_value(prop):
+    try:
+        t = prop["type"]
+
         if t == "title":
             return "".join([x["plain_text"] for x in prop["title"]])
 
-        if t == "rich_text":
+        elif t == "rich_text":
             return "".join([x["plain_text"] for x in prop["rich_text"]])
 
-        if t == "number":
+        elif t == "number":
             return str(prop["number"]) if prop["number"] else ""
 
-        if t == "select":
+        elif t == "select":
             return prop["select"]["name"] if prop["select"] else ""
 
-        if t == "multi_select":
+        elif t == "multi_select":
             return ", ".join([x["name"] for x in prop["multi_select"]])
 
-        if t == "status":
-            return prop["status"]["name"] if prop["status"] else ""
-
-        if t == "date":
+        elif t == "date":
             return prop["date"]["start"] if prop["date"] else ""
 
-        if t == "checkbox":
-            return "ใช่" if prop["checkbox"] else "ไม่"
-
-        if t == "relation":
-            return f"{len(prop['relation'])} รายการ" if prop["relation"] else ""
-
-        if t == "formula":
+        elif t == "formula":
             f = prop["formula"]
+
             if f["type"] == "string":
                 return f["string"] or ""
-            if f["type"] == "number":
-                return str(f["number"]) if f["number"] else ""
 
-        if t == "rollup":
+            if f["type"] == "number":
+                return str(f["number"])
+
+            if f["type"] == "boolean":
+                return "ใช่" if f["boolean"] else "ไม่"
+
+        elif t == "relation":
+            # แสดงจำนวน relation
+            return ", ".join([x["id"][:6] for x in prop["relation"][:5]])
+
+        elif t == "rollup":
             r = prop["rollup"]
 
             if r["type"] == "number":
-                return str(r["number"]) if r["number"] else ""
+                return str(r["number"])
+
+            if r["type"] == "date":
+                return r["date"]["start"] if r["date"] else ""
 
             if r["type"] == "array":
                 vals = []
-                for x in r["array"]:
-                    vals.append(get_value(x))
-                return ", ".join([v for v in vals if v])
+
+                for x in r["array"][:10]:
+
+                    if x["type"] == "title":
+                        vals.append("".join([a["plain_text"] for a in x["title"]]))
+
+                    elif x["type"] == "rich_text":
+                        vals.append("".join([a["plain_text"] for a in x["rich_text"]]))
+
+                    elif x["type"] == "select":
+                        if x["select"]:
+                            vals.append(x["select"]["name"])
+
+                    elif x["type"] == "number":
+                        vals.append(str(x["number"]))
+
+                return ", ".join(vals)
 
         return ""
 
     except:
         return ""
 
-# =========================
-# PARSE
-# =========================
+# ===============================
+# Query Notion
+# ===============================
+def get_rows():
+    try:
+        url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
+
+        payload = {
+            "page_size": 50
+        }
+
+        res = requests.post(
+            url,
+            headers=NOTION_HEADERS,
+            json=payload,
+            timeout=TIMEOUT
+        )
+
+        return res.json().get("results", [])
+
+    except:
+        return []
+
+# ===============================
+# Parse Row
+# ===============================
 def parse(item):
     props = item["properties"]
+
     row = {}
 
     for k in props:
@@ -143,68 +161,67 @@ def parse(item):
 
     return row
 
-# =========================
-# PICK FIELD
-# =========================
-def pick(row, arr):
-    for x in arr:
-        if x in row and row[x]:
-            return row[x]
-    return ""
-
-# =========================
-# FORMAT PERSON
-# =========================
-def show_person(row, i):
-    return f"""
-📌 รายการ {i}
-
-👤 ชื่อ: {pick(row,['ชื่อ','ชื่อสกุล'])}
-🆔 เลขบัตร: {pick(row,['เลขบัตรประชาชน'])}
-🌐 เครือข่ายหลัก: {pick(row,['เครือข่ายหลัก'])}
-🕸️ เครือข่าย: {pick(row,['เครือข่าย'])}
-📁 Case ID: {pick(row,['Case ID','Case id'])}
-📍 จังหวัด: {pick(row,['จังหวัด'])}
-🏠 ที่อยู่: {pick(row,['ที่อยู่ตามบัตรประชาชน','ที่อยู่'])}
-🎯 สถานะ: {pick(row,['สถานะ'])}
-📤 สถานะการส่ง: {pick(row,['สถานะการส่ง'])}
-👮 หน่วยรับผิดชอบ: {pick(row,['หน่วย'])}
-📮 ไปรษณีย์: {pick(row,['ไปรษณีย์'])}
-📅 วันที่ส่ง: {pick(row,['วันที่ส่ง'])}
-🏷️ บทบาท: {pick(row,['บทบาท'])}
-
--------------------------
-"""
-
-# =========================
+# ===============================
 # SEARCH
-# =========================
+# ===============================
 def search(keyword):
     rows = get_rows()
+
     found = []
 
-    kw = keyword.lower()
+    for r in rows:
+        p = parse(r)
 
-    for item in rows:
-        row = parse(item)
-        txt = json.dumps(row, ensure_ascii=False).lower()
+        all_text = " ".join([str(v) for v in p.values()]).lower()
 
-        if kw in txt:
-            found.append(row)
+        if keyword.lower() in all_text:
+            found.append(p)
+
+    return found
+
+# ===============================
+# แสดงผลแบบละเอียด
+# ===============================
+def show(found, keyword):
 
     if not found:
-        return "❌ ไม่พบข้อมูล"
+        return f"""❌ ไม่พบข้อมูล {keyword}
 
-    text = f"📊 พบ {len(found)} รายการ\n"
+🔎 ค้นหาได้จาก:
+🆔 เลขบัตรประชาชน
+👤 ชื่อ
+📍 จังหวัด
+📁 Case ID
+🎯 สถานะ
+🌐 เครือข่าย
+"""
 
-    for i, row in enumerate(found[:20], 1):
-        text += show_person(row, i)
+    txt = f"📊 พบ {len(found)} รายการ\n\n"
 
-    if len(found) > 20:
-        text += f"\n⚠️ แสดง 20 จาก {len(found)} รายการ"
+    for i, p in enumerate(found[:20], start=1):
 
-    text += """
-🔍 ค้นหาต่อได้จาก:
+        txt += f"""📌 รายการ {i}
+
+👤 ชื่อ: {p.get("ชื่อ","")}
+🆔 เลขบัตร: {p.get("เลขบัตรประชาชน","")}
+🌐 เครือข่ายหลัก: {p.get("เครือข่ายหลัก","")}
+🕸️ เครือข่าย: {p.get("เครือข่าย(Auto)","")}
+📁 Case ID: {p.get("Case id","")}
+📍 จังหวัด: {p.get("จังหวัดที่จับกุม(สุพรรณ)","")}
+🏠 ที่อยู่: {p.get("ที่อยู่ตามบัตรประชาชน","")}
+🎯 สถานะ: {p.get("สถานะ","")}
+📤 สถานะการส่ง: {p.get("สถานะการส่ง","")}
+👮 หน่วยรับผิดชอบ: {p.get("หน่วย(Auto)","")}
+🚓 หน่วย(ย้อนหลัง): {p.get("หน่วย(ย้อนหลัง)","")}
+📮 ไปรษณีย์: {p.get("ที่อยู่ไปรษณีย์(Auto)","")}
+📅 วันที่ส่ง: {p.get("วันที่ส่ง","")}
+🏷️ บทบาท: {p.get("บทบาทที่ตั้ง","")}
+
+------------------------
+"""
+
+    txt += """
+🔎 ค้นหาต่อได้จาก:
 • เลขบัตร
 • ชื่อ
 • จังหวัด
@@ -213,108 +230,73 @@ def search(keyword):
 • เครือข่าย
 """
 
-    return text
+    return txt[:5000]
 
-# =========================
-# SMART ANALYZE
-# =========================
-def summary(keyword):
-    rows = get_rows()
-    found = []
-
-    kw = keyword.lower()
-
-    for item in rows:
-        row = parse(item)
-        txt = json.dumps(row, ensure_ascii=False).lower()
-
-        if kw in txt:
-            found.append(row)
-
-    if not found:
-        return "❌ ไม่พบข้อมูล"
-
-    status_counter = Counter()
-    unit_counter = Counter()
-    net_counter = Counter()
-
-    for row in found:
-        status_counter[pick(row,["สถานะ"])] += 1
-        unit_counter[pick(row,["หน่วย"])] += 1
-        net_counter[pick(row,["เครือข่ายหลัก"])] += 1
-
-    text = f"📈 วิเคราะห์คำค้น: {keyword}\n"
-    text += f"📊 พบทั้งหมด {len(found)} รายการ\n\n"
-
-    text += "🎯 สถานะ:\n"
-    for k,v in status_counter.items():
-        if k:
-            text += f"• {k} {v}\n"
-
-    text += "\n👮 หน่วยรับผิดชอบ:\n"
-    for k,v in unit_counter.items():
-        if k:
-            text += f"• {k} {v}\n"
-
-    text += "\n🌐 เครือข่ายหลัก:\n"
-    for k,v in net_counter.items():
-        if k:
-            text += f"• {k} {v}\n"
-
-    text += "\n🔍 พิมพ์ชื่อจังหวัด / หน่วย / สถานะ ต่อได้"
-
-    return text
-
-# =========================
-# MENU
-# =========================
+# ===============================
+# เมนู
+# ===============================
 def menu():
-    return """
-🤖 ระบบค้นหาอัจฉริยะ
+    return """🤖 ระบบค้นหาฐานข้อมูล Person
 
-ค้นหาปกติ:
-ชุมพร
-1840400058473
-007/69
+พิมพ์ค้นหาได้ เช่น
+
+1869900207310
+นายสมชาย
+สุราษฎร์ธานี
+ถูกจับกุม
 ติดตามขยายผล
+007/69
+CMC0102
 
-วิเคราะห์:
-สรุป ชุมพร
-สรุป สุราษฎร์ธานี
-สรุป ถูกจับกุม
-สรุป 414
+🔎 ค้นหาได้จาก
+🆔 เลขบัตร
+👤 ชื่อ
+📍 จังหวัด
+📁 Case ID
+🎯 สถานะ
+🌐 เครือข่าย
 """
 
-# =========================
+# ===============================
 # WEBHOOK
-# =========================
+# ===============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         data = request.json
 
         for event in data["events"]:
+
             if event["type"] == "message":
+
                 msg = event["message"]["text"].strip()
                 token = event["replyToken"]
 
-                if msg.lower() in ["menu","เมนู","help"]:
+                if msg.lower() in ["menu", "help", "start", "เริ่ม", "เมนู"]:
                     reply(token, menu())
+                    continue
 
-                elif msg.startswith("สรุป "):
-                    key = msg.replace("สรุป ","").strip()
-                    reply(token, summary(key))
+                result = search(msg)
 
-                else:
-                    reply(token, search(msg))
+                reply(token, show(result, msg))
 
         return "OK"
 
-    except Exception as e:
-        return str(e), 500
+    except:
+        print(traceback.format_exc())
+        return "OK"
 
-# =========================
+# ===============================
+# HOME
+# ===============================
+@app.route("/")
+def home():
+    return "BOT RUNNING"
+
+# ===============================
 # RUN
-# =========================
+# ===============================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
