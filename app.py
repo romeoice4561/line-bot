@@ -22,7 +22,7 @@ def reply(reply_token, text):
     }
     requests.post(url, headers=headers, json=body)
 
-# ===== NOTION QUERY =====
+# ===== GET NOTION =====
 def get_notion_data():
     url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
     headers = {
@@ -30,10 +30,16 @@ def get_notion_data():
         "Notion-Version": "2022-06-28",
         "Content-Type": "application/json"
     }
+
     res = requests.post(url, headers=headers)
+
+    if res.status_code != 200:
+        print("NOTION ERROR:", res.text)
+        return []
+
     return res.json().get("results", [])
 
-# ===== PARSE VALUE =====
+# ===== อ่านค่าจาก Notion (รองรับทุก type) =====
 def get_value(prop):
     t = prop["type"]
 
@@ -52,9 +58,35 @@ def get_value(prop):
     if t == "number":
         return str(prop["number"]) if prop["number"] else ""
 
+    if t == "date":
+        return prop["date"]["start"] if prop["date"] else ""
+
+    # 🔥 Relation
+    if t == "relation":
+        return ", ".join([x["id"] for x in prop["relation"]])
+
+    # 🔥 Rollup
+    if t == "rollup":
+        roll = prop["rollup"]
+
+        if roll["type"] == "array":
+            values = []
+            for item in roll["array"]:
+                values.append(get_value(item))
+            return ", ".join(values)
+
+        if roll["type"] == "number":
+            return str(roll["number"])
+
+        if roll["type"] == "date":
+            return roll["date"]["start"] if roll["date"] else ""
+
+        if roll["type"] == "rich_text":
+            return "".join([x["plain_text"] for x in roll["rich_text"]])
+
     return ""
 
-# ===== PARSE ROW =====
+# ===== แปลง row =====
 def parse(item):
     props = item["properties"]
     data = {}
@@ -64,67 +96,91 @@ def parse(item):
 
     return data
 
-# ===== MAIN SEARCH LOGIC =====
-def analyze(data, keyword):
+# ===== UI แสดงผล =====
+def format_case(p):
+    return f"""
+📌 เคส: {p.get('เคส ID','-')}
+👤 ชื่อ: {p.get('Person','-')}
+🌍 จังหวัด: {p.get('จังหวัด','-')}
+🏢 หน่วยรับผิดชอบ: {p.get('หน่วย','-')}
+📮 ไปรษณีย์: {p.get('ไปรษณีย์','-')}
+🔗 เครือข่าย: {p.get('เครือข่าย','-')}
+📊 สถานะ: {p.get('สถานะการส่ง','-')}
+📅 วันที่ส่ง: {p.get('วันที่ส่ง','-')}
+------------------------
+"""
 
-    keyword = keyword.strip()
+# ===== วิเคราะห์ =====
+def analyze(data, keyword):
+    keyword = keyword.lower()
     results = []
 
     for item in data:
-        person = parse(item)
+        p = parse(item)
 
-        # 🔍 ค้นหาทุก field
-        if keyword in str(person):
-            results.append(person)
+        if keyword in str(p).lower():
+            results.append(p)
 
-    # ===== ไม่เจอ =====
     if not results:
-        return (
-            "❌ ไม่พบข้อมูล\n\n"
-            "🔎 ลองค้นหา:\n"
-            "- จังหวัด เช่น: สุราษฎร์ธานี\n"
-            "- เลขบัตรประชาชน\n"
-            "- สถานะ เช่น: ติดตามขยายผล"
-        )
+        return "❌ ไม่พบข้อมูล"
 
-    # ===== แยกติดตามขยายผล =====
-    follow_cases = []
-    for p in results:
-        if "ติดตาม" in str(p.get("สถานะ", "")):
-            follow_cases.append(p)
+    text = f"🔍 ผลการค้นหา: {keyword}\n\n"
 
-    text = "📊 ผลการค้นหา\n\n"
-
-    # ===== แสดงผล =====
     for p in results[:5]:
-        text += "👤 ชื่อ: " + p.get("ชื่อ", "-") + "\n"
-        text += "🆔 เลขบัตร: " + p.get("เลขบัตรประชาชน", "-") + "\n"
-        text += "📍 จังหวัด: " + p.get("จังหวัด", "-") + "\n"
-        text += "📌 สถานะ: " + p.get("สถานะ", "-") + "\n"
-        text += "🚓 หน่วยรับผิดชอบ: " + p.get("หน่วย(เชื่อมจริง)", "-") + "\n"
-        text += "📮 ไปรษณีย์: " + p.get("ที่อยู่ไปรษณีย์(Auto)", "-") + "\n"
-        text += "\n-----------------\n"
-
-    # ===== ถ้ามีติดตามขยายผล =====
-    if follow_cases:
-        text += "\n🚨 เคสติดตามขยายผล\n"
-        text += f"พบ {len(follow_cases)} ราย\n"
-
-        provinces = set()
-        for p in follow_cases:
-            provinces.add(p.get("จังหวัด", "-"))
-
-        text += "📍 จังหวัดที่ยังต้องติดตาม:\n"
-        for prov in provinces:
-            text += f"- {prov}\n"
-
-    # ===== เมนูแนะนำ =====
-    text += "\n💡 คำแนะนำค้นหาเพิ่มเติม\n"
-    text += "- พิมพ์ชื่อจังหวัด\n"
-    text += "- พิมพ์เลขบัตร\n"
-    text += "- พิมพ์ 'ติดตามขยายผล'\n"
+        text += format_case(p)
 
     return text
+
+# ===== สรุปติดตาม =====
+def summary_followup(data):
+    results = []
+
+    for item in data:
+        p = parse(item)
+
+        if "ติดตาม" in str(p):
+            results.append(p)
+
+    if not results:
+        return "✅ ไม่มีเคสคงค้าง"
+
+    text = "📊 เคสติดตามขยายผล\n\n"
+
+    provinces = set()
+
+    for p in results:
+        provinces.add(p.get("จังหวัด", "-"))
+
+    text += "📍 จังหวัดที่ยังค้าง:\n"
+    for pr in provinces:
+        text += f"- {pr}\n"
+
+    text += "\n💡 แนะนำค้นหา:\n"
+    text += "- พิมพ์ชื่อจังหวัด เช่น: ชุมพร\n"
+    text += "- พิมพ์เลขบัตร\n"
+    text += "- พิมพ์ชื่อเครือข่าย\n"
+
+    return text
+
+# ===== เมนู =====
+def menu():
+    return """
+🤖 เมนูคำสั่ง
+
+🔍 ค้นหา:
+- พิมพ์ จังหวัด
+- พิมพ์ เลขบัตร
+- พิมพ์ ชื่อเครือข่าย
+
+📊 สรุป:
+- พิมพ์: สรุป
+- พิมพ์: ติดตาม
+
+ตัวอย่าง:
+👉 ชุมพร
+👉 1103700xxxxx
+👉 เครือข่าย A
+"""
 
 # ===== WEBHOOK =====
 @app.route("/webhook", methods=["POST"])
@@ -137,8 +193,20 @@ def webhook():
             reply_token = event["replyToken"]
 
             notion_data = get_notion_data()
-            result = analyze(notion_data, msg)
 
+            # ===== MENU =====
+            if msg in ["menu", "เมนู"]:
+                reply(reply_token, menu())
+                return "OK"
+
+            # ===== SUMMARY =====
+            if msg in ["สรุป", "ติดตาม"]:
+                result = summary_followup(notion_data)
+                reply(reply_token, result)
+                return "OK"
+
+            # ===== SEARCH =====
+            result = analyze(notion_data, msg)
             reply(reply_token, result)
 
     return "OK"
