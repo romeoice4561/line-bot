@@ -24,7 +24,7 @@ NOTION_HEADERS = {
 }
 
 # ===============================
-# LINE REPLY
+# ส่งข้อความกลับ LINE
 # ===============================
 def reply(reply_token, text):
     try:
@@ -52,28 +52,26 @@ def reply(reply_token, text):
 
 
 # ===============================
-# อ่านค่า property แบบเร็วมาก
+# อ่านค่า Property ทุกชนิด
 # ===============================
 def get_value(prop):
     try:
         t = prop["type"]
 
         if t == "title":
-            arr = prop["title"]
-            return "".join([x["plain_text"] for x in arr])
+            return "".join([x["plain_text"] for x in prop["title"]])
 
         elif t == "rich_text":
-            arr = prop["rich_text"]
-            return "".join([x["plain_text"] for x in arr])
+            return "".join([x["plain_text"] for x in prop["rich_text"]])
+
+        elif t == "number":
+            return str(prop["number"]) if prop["number"] else ""
 
         elif t == "select":
             return prop["select"]["name"] if prop["select"] else ""
 
         elif t == "multi_select":
             return ", ".join([x["name"] for x in prop["multi_select"]])
-
-        elif t == "number":
-            return str(prop["number"]) if prop["number"] else ""
 
         elif t == "date":
             return prop["date"]["start"] if prop["date"] else ""
@@ -87,31 +85,41 @@ def get_value(prop):
             if f["type"] == "number":
                 return str(f["number"])
 
+            if f["type"] == "boolean":
+                return "ใช่" if f["boolean"] else "ไม่"
+
+        elif t == "relation":
+            # แสดงจำนวน relation
+            return ", ".join([x["id"][:6] for x in prop["relation"][:5]])
+
         elif t == "rollup":
             r = prop["rollup"]
 
             if r["type"] == "number":
                 return str(r["number"])
 
+            if r["type"] == "date":
+                return r["date"]["start"] if r["date"] else ""
+
             if r["type"] == "array":
                 vals = []
 
-                for x in r["array"][:5]:
-                    if x["type"] == "rich_text":
-                        vals.append("".join([a["plain_text"] for a in x["rich_text"]]))
+                for x in r["array"][:10]:
 
-                    elif x["type"] == "title":
+                    if x["type"] == "title":
                         vals.append("".join([a["plain_text"] for a in x["title"]]))
+
+                    elif x["type"] == "rich_text":
+                        vals.append("".join([a["plain_text"] for a in x["rich_text"]]))
 
                     elif x["type"] == "select":
                         if x["select"]:
                             vals.append(x["select"]["name"])
 
-                return ", ".join(vals)
+                    elif x["type"] == "number":
+                        vals.append(str(x["number"]))
 
-        elif t == "relation":
-            # ไม่ยิง API ซ้ำ
-            return str(len(prop["relation"])) + " รายการ"
+                return ", ".join(vals)
 
         return ""
 
@@ -120,9 +128,9 @@ def get_value(prop):
 
 
 # ===============================
-# ดึงข้อมูล Notion เร็ว
+# Query Notion
 # ===============================
-def get_data():
+def get_rows():
     try:
         url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
 
@@ -144,7 +152,7 @@ def get_data():
 
 
 # ===============================
-# แปลง row
+# Parse Row
 # ===============================
 def parse(item):
     props = item["properties"]
@@ -161,30 +169,32 @@ def parse(item):
 # SEARCH
 # ===============================
 def search(keyword):
-    rows = get_data()
+    rows = get_rows()
 
     found = []
 
     for r in rows:
         p = parse(r)
 
-        text_all = " ".join([str(v) for v in p.values()]).lower()
+        all_text = " ".join([str(v) for v in p.values()]).lower()
 
-        if keyword.lower() in text_all:
+        if keyword.lower() in all_text:
             found.append(p)
 
     return found
 
 
 # ===============================
-# SHOW RESULT
+# แสดงผลแบบละเอียด
 # ===============================
 def show(found, keyword):
+
     if not found:
         return f"""❌ ไม่พบข้อมูล {keyword}
 
 🔎 ค้นหาได้จาก:
-🆔 เลขบัตร
+🆔 เลขบัตรประชาชน
+👤 ชื่อ
 📍 จังหวัด
 📁 Case ID
 🎯 สถานะ
@@ -194,44 +204,59 @@ def show(found, keyword):
     txt = f"📊 พบ {len(found)} รายการ\n\n"
 
     for i, p in enumerate(found[:5], start=1):
-        txt += f"""📌 รายการ {i}
-👤 {p.get("ชื่อสกุล","")}
-🆔 {p.get("เลขบัตรประชาชน","")}
-🌐 {p.get("เครือข่ายหลัก","")}
-🕸️ {p.get("เครือข่าย","")}
-📁 {p.get("Case ID","")}
-📍 {p.get("จังหวัด","")}
-🎯 {p.get("สถานะ","")}
-👮 {p.get("หน่วย","")}
-📮 {p.get("ไปรษณีย์","")}
-🏷️ {p.get("บทบาท","")}
 
-----------------
+        txt += f"""📌 รายการ {i}
+
+👤 ชื่อ: {p.get("ชื่อ","")}
+🆔 เลขบัตร: {p.get("เลขบัตรประชาชน","")}
+🌐 เครือข่ายหลัก: {p.get("เครือข่ายหลัก","")}
+🕸️ เครือข่าย: {p.get("เครือข่าย(Auto)","")}
+📁 Case ID: {p.get("Case id","")}
+📍 จังหวัด: {p.get("จังหวัดที่จับกุม(สุพรรณ)","")}
+🏠 ที่อยู่: {p.get("ที่อยู่ตามบัตรประชาชน","")}
+🎯 สถานะ: {p.get("สถานะ","")}
+📤 สถานะการส่ง: {p.get("สถานะการส่ง","")}
+👮 หน่วยรับผิดชอบ: {p.get("หน่วย(Auto)","")}
+🚓 หน่วย(ย้อนหลัง): {p.get("หน่วย(ย้อนหลัง)","")}
+📮 ไปรษณีย์: {p.get("ที่อยู่ไปรษณีย์(Auto)","")}
+📅 วันที่ส่ง: {p.get("วันที่ส่ง","")}
+🏷️ บทบาท: {p.get("บทบาทที่ตั้ง","")}
+
+------------------------
 """
 
     txt += """
-🔎 ค้นหาต่อ:
-เลขบัตร / จังหวัด / สถานะ / Case ID
+🔎 ค้นหาต่อได้จาก:
+• เลขบัตร
+• ชื่อ
+• จังหวัด
+• สถานะ
+• Case ID
+• เครือข่าย
 """
 
     return txt[:5000]
 
 
 # ===============================
-# MENU
+# เมนู
 # ===============================
 def menu():
-    return """🤖 ระบบค้นหาฐานข้อมูล
+    return """🤖 ระบบค้นหาฐานข้อมูล Person
 
-พิมพ์ได้ เช่น
+พิมพ์ค้นหาได้ เช่น
 
 1869900207310
-ชุมพร
+นายสมชาย
+สุราษฎร์ธานี
+ถูกจับกุม
 ติดตามขยายผล
-CASE001
+007/69
+CMC0102
 
-🔎 ค้นหาจาก:
+🔎 ค้นหาได้จาก
 🆔 เลขบัตร
+👤 ชื่อ
 📍 จังหวัด
 📁 Case ID
 🎯 สถานะ
