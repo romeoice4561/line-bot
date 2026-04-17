@@ -4,27 +4,42 @@ import os
 
 app = Flask(__name__)
 
-# ===== ENV =====
+# ==================================================
+# ENV (ใส่ใน Render Environment เท่านั้น)
+# ==================================================
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 DATABASE_ID = os.getenv("DATABASE_ID")
 
-# ===== LINE REPLY =====
+# ==================================================
+# LINE REPLY
+# ==================================================
 def reply(reply_token, text):
     url = "https://api.line.me/v2/bot/message/reply"
+
     headers = {
         "Authorization": f"Bearer {LINE_TOKEN}",
         "Content-Type": "application/json"
     }
+
     body = {
         "replyToken": reply_token,
-        "messages": [{"type": "text", "text": text[:5000]}]
+        "messages": [
+            {
+                "type": "text",
+                "text": text[:5000]
+            }
+        ]
     }
+
     requests.post(url, headers=headers, json=body)
 
-# ===== GET NOTION =====
+# ==================================================
+# GET NOTION DATA
+# ==================================================
 def get_notion_data():
     url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
+
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
         "Notion-Version": "2022-06-28",
@@ -39,41 +54,94 @@ def get_notion_data():
 
     return res.json().get("results", [])
 
-# ===== อ่านค่าจาก Notion (รองรับทุก type) =====
+# ==================================================
+# ดึงชื่อ Page จาก page_id (สำคัญมาก สำหรับ relation)
+# ==================================================
+def get_page_title(page_id):
+    url = f"https://api.notion.com/v1/pages/{page_id}"
+
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28"
+    }
+
+    res = requests.get(url, headers=headers)
+
+    if res.status_code != 200:
+        return page_id
+
+    data = res.json()
+    props = data.get("properties", {})
+
+    for k in props:
+        p = props[k]
+
+        if p["type"] == "title":
+            if p["title"]:
+                return p["title"][0]["plain_text"]
+
+    return page_id
+
+# ==================================================
+# แปลงค่า Notion ทุกชนิด
+# ==================================================
 def get_value(prop):
     t = prop["type"]
 
+    # ---------- title ----------
     if t == "title":
-        return prop["title"][0]["plain_text"] if prop["title"] else ""
+        return "".join([x["plain_text"] for x in prop["title"]])
 
+    # ---------- rich text ----------
     if t == "rich_text":
         return "".join([x["plain_text"] for x in prop["rich_text"]])
 
+    # ---------- select ----------
     if t == "select":
         return prop["select"]["name"] if prop["select"] else ""
 
+    # ---------- multi select ----------
     if t == "multi_select":
         return ", ".join([x["name"] for x in prop["multi_select"]])
 
+    # ---------- number ----------
     if t == "number":
-        return str(prop["number"]) if prop["number"] else ""
+        return str(prop["number"]) if prop["number"] is not None else ""
 
+    # ---------- status ----------
+    if t == "status":
+        return prop["status"]["name"] if prop["status"] else ""
+
+    # ---------- people ----------
+    if t == "people":
+        return ", ".join([x["name"] for x in prop["people"]])
+
+    # ---------- date ----------
     if t == "date":
         return prop["date"]["start"] if prop["date"] else ""
 
-    # 🔥 Relation
-    if t == "relation":
-        return ", ".join([x["id"] for x in prop["relation"]])
+    # ---------- checkbox ----------
+    if t == "checkbox":
+        return "Yes" if prop["checkbox"] else "No"
 
-    # 🔥 Rollup
+    # ==================================================
+    # RELATION (แปลง id เป็นชื่อจริง)
+    # ==================================================
+    if t == "relation":
+        ids = prop["relation"]
+
+        names = []
+        for item in ids:
+            page_id = item["id"]
+            names.append(get_page_title(page_id))
+
+        return ", ".join(names)
+
+    # ==================================================
+    # ROLLUP
+    # ==================================================
     if t == "rollup":
         roll = prop["rollup"]
-
-        if roll["type"] == "array":
-            values = []
-            for item in roll["array"]:
-                values.append(get_value(item))
-            return ", ".join(values)
 
         if roll["type"] == "number":
             return str(roll["number"])
@@ -81,136 +149,154 @@ def get_value(prop):
         if roll["type"] == "date":
             return roll["date"]["start"] if roll["date"] else ""
 
-        if roll["type"] == "rich_text":
-            return "".join([x["plain_text"] for x in roll["rich_text"]])
+        if roll["type"] == "array":
+            vals = []
+
+            for item in roll["array"]:
+                vals.append(get_value(item))
+
+            return ", ".join([str(x) for x in vals if x])
 
     return ""
 
-# ===== แปลง row =====
+# ==================================================
+# แปลง row
+# ==================================================
 def parse(item):
     props = item["properties"]
-    data = {}
+    row = {}
 
     for key in props:
-        data[key] = get_value(props[key])
+        row[key] = get_value(props[key])
 
-    return data
+    return row
 
-# ===== UI แสดงผล =====
-def format_case(p):
-    return f"""
-📌 เคส: {p.get('เคส ID','-')}
-👤 ชื่อ: {p.get('Person','-')}
-🌍 จังหวัด: {p.get('จังหวัด','-')}
-🏢 หน่วยรับผิดชอบ: {p.get('หน่วย','-')}
-📮 ไปรษณีย์: {p.get('ไปรษณีย์','-')}
-🔗 เครือข่าย: {p.get('เครือข่าย','-')}
-📊 สถานะ: {p.get('สถานะการส่ง','-')}
-📅 วันที่ส่ง: {p.get('วันที่ส่ง','-')}
-------------------------
+# ==================================================
+# เมนู
+# ==================================================
+def menu():
+    return """
+🤖 BPP414 Drug Network BOT
+
+🔎 วิธีค้นหา
+
+1️⃣ ค้นหาจากเลขบัตรประชาชน
+ตัวอย่าง:
+1869900207310
+
+2️⃣ ค้นหาจากชื่อ
+ตัวอย่าง:
+สมชาย
+
+3️⃣ ค้นหาจากสถานะ
+ตัวอย่าง:
+ติดตามขยายผล
+
+4️⃣ ค้นหาจากเครือข่าย
+ตัวอย่าง:
+เครือข่ายท่าตะเภา
+
+5️⃣ ค้นหาจาก Case ID
+ตัวอย่าง:
+CASE001
+
+6️⃣ ค้นหาจากหน่วย
+ตัวอย่าง:
+414
+
+📌 พิมพ์ข้อความได้เลย ระบบจะค้นหาให้ทันที
 """
 
-# ===== วิเคราะห์ =====
-def analyze(data, keyword):
+# ==================================================
+# แสดงผล
+# ==================================================
+def show_case(p):
+    return f"""
+📊 ผลการค้นหา
+
+👑 เครือข่ายหลัก: {p.get('เครือข่ายหลัก','-')}
+🔗 เครือข่าย: {p.get('เครือข่าย','-')}
+
+🆔 เลขบัตร: {p.get('เลขบัตรประชาชน','-')}
+👤 ชื่อสกุล: {p.get('ชื่อสกุล','-')}
+
+🏠 ที่อยู่: {p.get('ที่อยู่ตามบัตรประชาชน','-')}
+
+📁 Case ID: {p.get('Case ID','-')}
+📌 สถานะ: {p.get('สถานะ','-')}
+🎭 บทบาท: {p.get('บทบาท','-')}
+
+🚓 หน่วย: {p.get('หน่วย','-')}
+📮 ไปรษณีย์: {p.get('ไปรษณีย์','-')}
+
+-------------------------
+"""
+
+# ==================================================
+# SEARCH
+# ==================================================
+def search_data(data, keyword):
     keyword = keyword.lower()
     results = []
 
     for item in data:
-        p = parse(item)
+        row = parse(item)
 
-        if keyword in str(p).lower():
-            results.append(p)
+        text = str(row).lower()
 
-    if not results:
-        return "❌ ไม่พบข้อมูล"
-
-    text = f"🔍 ผลการค้นหา: {keyword}\n\n"
-
-    for p in results[:5]:
-        text += format_case(p)
-
-    return text
-
-# ===== สรุปติดตาม =====
-def summary_followup(data):
-    results = []
-
-    for item in data:
-        p = parse(item)
-
-        if "ติดตาม" in str(p):
-            results.append(p)
+        if keyword in text:
+            results.append(row)
 
     if not results:
-        return "✅ ไม่มีเคสคงค้าง"
+        return """
+❌ ไม่พบข้อมูล
 
-    text = "📊 เคสติดตามขยายผล\n\n"
-
-    provinces = set()
-
-    for p in results:
-        provinces.add(p.get("จังหวัด", "-"))
-
-    text += "📍 จังหวัดที่ยังค้าง:\n"
-    for pr in provinces:
-        text += f"- {pr}\n"
-
-    text += "\n💡 แนะนำค้นหา:\n"
-    text += "- พิมพ์ชื่อจังหวัด เช่น: ชุมพร\n"
-    text += "- พิมพ์เลขบัตร\n"
-    text += "- พิมพ์ชื่อเครือข่าย\n"
-
-    return text
-
-# ===== เมนู =====
-def menu():
-    return """
-🤖 เมนูคำสั่ง
-
-🔍 ค้นหา:
-- พิมพ์ จังหวัด
-- พิมพ์ เลขบัตร
-- พิมพ์ ชื่อเครือข่าย
-
-📊 สรุป:
-- พิมพ์: สรุป
-- พิมพ์: ติดตาม
-
-ตัวอย่าง:
-👉 ชุมพร
-👉 1103700xxxxx
-👉 เครือข่าย A
+💡 ลองค้นหาด้วย:
+- เลขบัตรประชาชน
+- ชื่อสกุล
+- สถานะ
+- เครือข่าย
+- Case ID
 """
 
-# ===== WEBHOOK =====
+    msg = f"🔍 พบ {len(results)} รายการ\n"
+
+    for r in results[:5]:
+        msg += show_case(r)
+
+    return msg[:5000]
+
+# ==================================================
+# WEBHOOK
+# ==================================================
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json
+    body = request.json
 
-    for event in data["events"]:
+    for event in body["events"]:
+
         if event["type"] == "message":
-            msg = event["message"]["text"]
+
+            msg = event["message"]["text"].strip()
             reply_token = event["replyToken"]
 
+            # เมนู
+            if msg.lower() in ["menu", "เมนู", "help"]:
+                reply(reply_token, menu())
+                continue
+
+            # โหลดข้อมูล
             notion_data = get_notion_data()
 
-            # ===== MENU =====
-            if msg in ["menu", "เมนู"]:
-                reply(reply_token, menu())
-                return "OK"
+            # ค้นหา
+            result = search_data(notion_data, msg)
 
-            # ===== SUMMARY =====
-            if msg in ["สรุป", "ติดตาม"]:
-                result = summary_followup(notion_data)
-                reply(reply_token, result)
-                return "OK"
-
-            # ===== SEARCH =====
-            result = analyze(notion_data, msg)
             reply(reply_token, result)
 
     return "OK"
 
-# ===== RUN =====
+# ==================================================
+# RUN
+# ==================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
