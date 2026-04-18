@@ -196,11 +196,11 @@ def search(keyword):
 
     text = f"📊 พบ {len(found)} รายการ\n"
 
-    for i, row in enumerate(found[:10], 1):
+    for i, row in enumerate(found[:20], 1):
         text += person_text(row, i)
 
-    if len(found) > 10:
-        text += f"\n⚠️ แสดง 10 จาก {len(found)} รายการ"
+    if len(found) > 20:
+        text += f"\n⚠️ แสดง 20 จาก {len(found)} รายการ"
 
     text += """
 🔍 ค้นหาต่อได้จาก:
