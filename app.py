@@ -2,6 +2,7 @@ from flask import Flask, request
 import requests
 import os
 import time
+import threading
 
 app = Flask(__name__)
 
@@ -12,17 +13,17 @@ LINE_TOKEN = os.getenv("LINE_TOKEN")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 DATABASE_ID = os.getenv("DATABASE_ID")
 
-# =========================
-# CONFIG
-# =========================
-NOTION_VERSION = "2022-06-28"
-CACHE_SECONDS = 180
-MAX_SHOW = 50
-TIMEOUT = 12
+NOTION_URL = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
 
-cache_data = []
-cache_time = 0
-page_cache = {}
+# =========================
+# CACHE
+# =========================
+CACHE = {
+    "time": 0,
+    "data": []
+}
+
+CACHE_SECONDS = 180
 
 # =========================
 # HEADERS
@@ -30,7 +31,7 @@ page_cache = {}
 def notion_headers():
     return {
         "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Notion-Version": NOTION_VERSION,
+        "Notion-Version": "2022-06-28",
         "Content-Type": "application/json"
     }
 
@@ -39,320 +40,198 @@ def notion_headers():
 # =========================
 def reply(token, text):
     url = "https://api.line.me/v2/bot/message/reply"
+
     headers = {
         "Authorization": f"Bearer {LINE_TOKEN}",
         "Content-Type": "application/json"
     }
+
     body = {
         "replyToken": token,
-        "messages": [{
-            "type": "text",
-            "text": text[:5000]
-        }]
+        "messages": [
+            {
+                "type": "text",
+                "text": text[:5000]
+            }
+        ]
     }
-    requests.post(url, headers=headers, json=body, timeout=10)
 
-# =========================
-# SAFE REQUEST
-# =========================
-def safe_post(url, json_data=None):
     try:
-        r = requests.post(
-            url,
-            headers=notion_headers(),
-            json=json_data,
-            timeout=TIMEOUT
-        )
-        return r.json()
+        requests.post(url, headers=headers, json=body, timeout=10)
     except:
-        return {}
+        pass
 
-def safe_get(url):
+# =========================
+# SAFE VALUE READER
+# =========================
+def read_property(prop):
+
+    t = prop.get("type", "")
+
     try:
-        r = requests.get(
-            url,
-            headers=notion_headers(),
-            timeout=TIMEOUT
-        )
-        return r.json()
-    except:
-        return {}
+        if t == "title":
+            return "".join([x["plain_text"] for x in prop["title"]])
 
-# =========================
-# GET PAGE TITLE FROM PAGE ID
-# =========================
-def get_page_title(page_id):
-    if page_id in page_cache:
-        return page_cache[page_id]
+        elif t == "rich_text":
+            return "".join([x["plain_text"] for x in prop["rich_text"]])
 
-    data = safe_get(f"https://api.notion.com/v1/pages/{page_id}")
-    props = data.get("properties", {})
+        elif t == "number":
+            return str(prop["number"]) if prop["number"] is not None else ""
 
-    title = ""
-    for k, v in props.items():
-        if v["type"] == "title":
-            arr = v["title"]
-            if arr:
-                title = arr[0]["plain_text"]
-                break
+        elif t == "select":
+            return prop["select"]["name"] if prop["select"] else ""
 
-    if title == "":
-        title = page_id[:8]
+        elif t == "multi_select":
+            return ", ".join([x["name"] for x in prop["multi_select"]])
 
-    page_cache[page_id] = title
-    return title
+        elif t == "status":
+            return prop["status"]["name"] if prop["status"] else ""
 
-# =========================
-# PROPERTY READER
-# =========================
-def read_prop(prop):
-
-    t = prop["type"]
-
-    if t == "title":
-        arr = prop["title"]
-        return "".join([x["plain_text"] for x in arr])
-
-    if t == "rich_text":
-        arr = prop["rich_text"]
-        return "".join([x["plain_text"] for x in arr])
-
-    if t == "number":
-        return str(prop["number"] or "")
-
-    if t == "select":
-        return prop["select"]["name"] if prop["select"] else ""
-
-    if t == "multi_select":
-        return ", ".join([x["name"] for x in prop["multi_select"]])
-
-    if t == "status":
-        return prop["status"]["name"] if prop["status"] else ""
-
-    if t == "date":
-        if prop["date"]:
-            return prop["date"]["start"]
-        return ""
-
-    if t == "checkbox":
-        return "ใช่" if prop["checkbox"] else "ไม่"
-
-    if t == "phone_number":
-        return prop["phone_number"] or ""
-
-    if t == "email":
-        return prop["email"] or ""
-
-    if t == "url":
-        return prop["url"] or ""
-
-    # RELATION ดึงชื่อจริง
-    if t == "relation":
-        ids = prop["relation"]
-        names = []
-        for x in ids[:10]:
-            names.append(get_page_title(x["id"]))
-        return ", ".join(names)
-
-    # ROLLUP
-    if t == "rollup":
-        roll = prop["rollup"]
-
-        if roll["type"] == "number":
-            return str(roll["number"] or "")
-
-        if roll["type"] == "date":
-            if roll["date"]:
-                return roll["date"]["start"]
+        elif t == "date":
+            if prop["date"]:
+                return prop["date"]["start"]
             return ""
 
-        if roll["type"] == "array":
-            vals = []
-            for item in roll["array"]:
+        elif t == "checkbox":
+            return "ใช่" if prop["checkbox"] else "ไม่"
 
-                inner_type = item["type"]
+        elif t == "url":
+            return prop["url"] or ""
 
-                if inner_type == "title":
-                    vals.append(
-                        "".join([x["plain_text"] for x in item["title"]])
-                    )
+        elif t == "email":
+            return prop["email"] or ""
 
-                elif inner_type == "rich_text":
-                    vals.append(
-                        "".join([x["plain_text"] for x in item["rich_text"]])
-                    )
+        elif t == "phone_number":
+            return prop["phone_number"] or ""
 
-                elif inner_type == "select":
-                    if item["select"]:
-                        vals.append(item["select"]["name"])
+        elif t == "relation":
+            ids = prop["relation"]
+            return ", ".join([x["id"][:6] for x in ids])
 
-                elif inner_type == "number":
-                    vals.append(str(item["number"]))
+        elif t == "rollup":
+            ru = prop["rollup"]
 
-                elif inner_type == "relation":
-                    for rr in item["relation"]:
-                        vals.append(get_page_title(rr["id"]))
+            if ru["type"] == "number":
+                return str(ru["number"])
 
-            return ", ".join([v for v in vals if v])
+            elif ru["type"] == "date":
+                return ru["date"]["start"] if ru["date"] else ""
+
+            elif ru["type"] == "array":
+                vals = []
+                for i in ru["array"]:
+                    vals.append(read_property(i))
+                return ", ".join([v for v in vals if v])
+
+            return ""
+
+        elif t == "formula":
+            f = prop["formula"]
+
+            if f["type"] == "string":
+                return f["string"] or ""
+
+            elif f["type"] == "number":
+                return str(f["number"])
+
+            elif f["type"] == "boolean":
+                return "ใช่" if f["boolean"] else "ไม่"
+
+            return ""
 
         return ""
 
-    return ""
+    except:
+        return ""
 
 # =========================
-# LOAD NOTION
+# GET ALL DATA (CACHE)
 # =========================
-def load_data():
-    global cache_data, cache_time
+def get_all_data():
 
     now = time.time()
 
-    if now - cache_time < CACHE_SECONDS and cache_data:
-        return cache_data
+    if now - CACHE["time"] < CACHE_SECONDS:
+        return CACHE["data"]
 
-    url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
-
-    rows = []
+    data = []
     cursor = None
 
     while True:
-        payload = {"page_size": 100}
+
+        payload = {
+            "page_size": 100
+        }
 
         if cursor:
             payload["start_cursor"] = cursor
 
-        data = safe_post(url, payload)
+        r = requests.post(
+            NOTION_URL,
+            headers=notion_headers(),
+            json=payload,
+            timeout=20
+        )
 
-        results = data.get("results", [])
-        rows.extend(results)
+        js = r.json()
 
-        if data.get("has_more"):
-            cursor = data.get("next_cursor")
+        data.extend(js.get("results", []))
+
+        if js.get("has_more"):
+            cursor = js.get("next_cursor")
         else:
             break
 
-        if len(rows) > 1000:
-            break
+    CACHE["time"] = now
+    CACHE["data"] = data
 
-    cache_data = rows
-    cache_time = now
-    return rows
+    return data
 
 # =========================
 # CONVERT ROW
 # =========================
 def parse_row(item):
+
     props = item["properties"]
-    out = {}
+
+    row = {}
 
     for k in props:
-        try:
-            out[k] = read_prop(props[k]).strip()
-        except:
-            out[k] = ""
+        row[k] = read_property(props[k])
 
-    return out
+    return row
 
 # =========================
-# SEARCH
+# SMART SEARCH
 # =========================
 def search(keyword):
-    rows = load_data()
-    found = []
 
-    kw = keyword.lower().strip()
+    keyword = keyword.strip().lower()
 
-    for r in rows:
-        row = parse_row(r)
+    rows = get_all_data()
 
-        text = " | ".join(row.values()).lower()
+    result = []
 
-        if kw in text:
-            found.append(row)
+    for item in rows:
 
-    return found
+        row = parse_row(item)
 
-# =========================
-# PICK FIELD
-# =========================
-def pick(row, names):
-    for n in names:
-        if n in row and row[n]:
-            return row[n]
-    return ""
+        text = " | ".join([str(v).lower() for v in row.values()])
+
+        if keyword in text:
+            result.append(row)
+
+    return result
 
 # =========================
 # FORMAT RESULT
 # =========================
-def render(keyword):
+def show(rows):
 
-    if keyword in ["เมนู", "help", "menu"]:
-        return """📌 เมนูค้นหา
+    if not rows:
+        return """❌ ไม่พบข้อมูล
 
-ค้นหาได้จาก:
-• เลขบัตรประชาชน
-• ชื่อ
-• จังหวัด
-• สถานะ
-• เครือข่าย
-• Case ID
-• หน่วย
-
-ตัวอย่าง:
-ชุมพร
-ติดตามขยายผล
-007/69
-414
-"""
-
-    found = search(keyword)
-
-    if not found:
-        return "❌ ไม่พบข้อมูล"
-
-    msg = f"📊 พบ {len(found)} รายการ\n\n"
-
-    for i, row in enumerate(found[:MAX_SHOW], 1):
-
-        name = pick(row, ["ชื่อ", "ชื่อสกุล", "Person"])
-        cid = pick(row, ["เลขบัตรประชาชน", "เลขบัตร", "ID"])
-        netmain = pick(row, ["เครือข่ายหลัก"])
-        net = pick(row, ["เครือข่าย"])
-        caseid = pick(row, ["Case ID", "Case id"])
-        province = pick(row, ["จังหวัดที่จับกุม", "จังหวัด"])
-        addr = pick(row, ["ที่อยู่ตามบัตรประชาชน", "ที่อยู่"])
-        status = pick(row, ["สถานะ"])
-        send = pick(row, ["สถานะการส่ง"])
-        unit = pick(row, ["หน่วย", "หน่วยรับผิดชอบ"])
-        unit2 = pick(row, ["หน่วย(ย้อนหลัง)"])
-        post = pick(row, ["ไปรษณีย์"])
-        date = pick(row, ["วันที่ส่ง"])
-        role = pick(row, ["บทบาท"])
-
-        msg += f"""📌 รายการ {i}
-👤 ชื่อ: {name}
-🆔 เลขบัตร: {cid}
-🌐 เครือข่ายหลัก: {netmain}
-🕸️ เครือข่าย: {net}
-📁 Case ID: {caseid}
-📍 จังหวัด: {province}
-🏠 ที่อยู่: {addr}
-🎯 สถานะ: {status}
-📤 สถานะการส่ง: {send}
-👮 หน่วยรับผิดชอบ: {unit}
-🚓 หน่วย(ย้อนหลัง): {unit2}
-📮 ไปรษณีย์: {post}
-📅 วันที่ส่ง: {date}
-🏷️ บทบาท: {role}
-
---------------------
-
-"""
-
-    if len(found) > MAX_SHOW:
-        msg += f"📌 แสดง {MAX_SHOW} จาก {len(found)} รายการ\n\n"
-
-    msg += """🔎 ค้นหาต่อได้จาก:
+🔎 ค้นหาได้จาก:
 • เลขบัตร
 • ชื่อ
 • จังหวัด
@@ -360,36 +239,88 @@ def render(keyword):
 • Case ID
 • เครือข่าย"""
 
-    return msg[:5000]
+    txt = f"📊 พบ {len(rows)} รายการ\n\n"
+
+    count = 1
+
+    for row in rows[:20]:
+
+        txt += f"""📌 รายการ {count}
+👤 ชื่อ: {row.get('ชื่อ','')}
+🆔 เลขบัตร: {row.get('เลขบัตรประชาชน','')}
+🌐 เครือข่ายหลัก: {row.get('เครือข่ายหลัก','')}
+🕸️ เครือข่าย: {row.get('เครือข่าย','')}
+📁 Case ID: {row.get('Case id','')}
+📍 จังหวัด: {row.get('จังหวัด','')}
+🏠 ที่อยู่: {row.get('ที่อยู่ตามบัตรประชาชน','')}
+🎯 สถานะ: {row.get('สถานะ','')}
+🏷️ บทบาท: {row.get('บทบาท','')}
+👮 หน่วยรับผิดชอบ: {row.get('หน่วย','')}
+🚓 หน่วยย้อนหลัง: {row.get('หน่วยย้อนหลัง','')}
+📮 ไปรษณีย์: {row.get('ไปรษณีย์','')}
+📅 วันที่ส่ง: {row.get('วันที่ส่ง','')}
+
+----------------------
+
+"""
+
+        count += 1
+
+    txt += """🔎 ค้นหาต่อได้จาก:
+• เลขบัตร
+• ชื่อ
+• จังหวัด
+• สถานะ
+• Case ID
+• เครือข่าย"""
+
+    return txt[:5000]
+
+# =========================
+# ASYNC HANDLE
+# =========================
+def process_message(reply_token, msg):
+
+    try:
+        rows = search(msg)
+        text = show(rows)
+        reply(reply_token, text)
+
+    except Exception as e:
+        reply(reply_token, f"❌ ระบบขัดข้อง\n{str(e)[:100]}")
 
 # =========================
 # HOME
 # =========================
-@app.route("/", methods=["GET"])
+@app.route("/")
 def home():
-    return "LINE BOT RUNNING"
+    return "BOT RUNNING"
 
 # =========================
 # WEBHOOK
 # =========================
 @app.route("/webhook", methods=["POST"])
 def webhook():
+
+    data = request.json
+
     try:
-        data = request.json
-
         for event in data["events"]:
-            if event["type"] == "message":
-                if event["message"]["type"] == "text":
-                    txt = event["message"]["text"].strip()
-                    token = event["replyToken"]
 
-                    result = render(txt)
-                    reply(token, result)
+            if event["type"] == "message":
+
+                msg = event["message"]["text"]
+                token = event["replyToken"]
+
+                threading.Thread(
+                    target=process_message,
+                    args=(token, msg)
+                ).start()
 
         return "OK"
 
-    except Exception as e:
-        return str(e), 500
+    except:
+        return "OK"
 
 # =========================
 # RUN
