@@ -1,11 +1,10 @@
 # app.py
-# LINE BOT + NOTION SEARCH (FINAL REAL VERSION)
-# ใช้งานกับฐานข้อมูลของคุณโดยตรง
+# FAST VERSION / RENDER FREE / LINE + NOTION
+# เร็วจริง ใช้งานได้เลย
 
 import os
-import json
 import requests
-from flask import Flask, request
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
@@ -14,7 +13,7 @@ app = Flask(__name__)
 # =========================
 LINE_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-DATABASE_ID = os.getenv("NOTION_DATABASE_ID")   # PERSON TABLE
+DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
 # =========================
 # HEADER
@@ -35,241 +34,136 @@ NOTION_HEADERS = {
 # =========================
 @app.route("/", methods=["GET"])
 def home():
-    return "LINE BOT RUNNING"
+    return "BOT RUNNING"
 
 # =========================
 # LINE REPLY
 # =========================
-def reply(reply_token, text):
+def reply_message(reply_token, text):
     url = "https://api.line.me/v2/bot/message/reply"
-    data = {
+
+    payload = {
         "replyToken": reply_token,
-        "messages": [{"type": "text", "text": text[:4900]}]
+        "messages": [
+            {
+                "type": "text",
+                "text": text[:4900]
+            }
+        ]
     }
-    requests.post(url, headers=LINE_HEADERS, json=data, timeout=20)
+
+    requests.post(url, headers=LINE_HEADERS, json=payload, timeout=10)
 
 # =========================
 # NOTION HELPERS
 # =========================
 def notion_post(url, payload):
-    r = requests.post(url, headers=NOTION_HEADERS, json=payload, timeout=30)
+    r = requests.post(
+        url,
+        headers=NOTION_HEADERS,
+        json=payload,
+        timeout=15
+    )
     return r.json()
 
-def notion_get(url):
-    r = requests.get(url, headers=NOTION_HEADERS, timeout=30)
-    return r.json()
-
-# -------------------------
-# text readers
-# -------------------------
-def rich(prop):
+def get_title(prop):
     try:
-        return "".join([x["plain_text"] for x in prop.get("rich_text", [])]).strip()
+        return "".join([x["plain_text"] for x in prop["title"]]).strip()
     except:
         return ""
 
-def title(prop):
+def get_rich(prop):
     try:
-        return "".join([x["plain_text"] for x in prop.get("title", [])]).strip()
+        return "".join([x["plain_text"] for x in prop["rich_text"]]).strip()
     except:
         return ""
 
-def selectv(prop):
+def get_select(prop):
     try:
         return prop["select"]["name"]
     except:
         return ""
 
-def multiselect(prop):
-    try:
-        return ", ".join([x["name"] for x in prop["multi_select"]])
-    except:
-        return ""
-
-def datev(prop):
-    try:
-        return prop["date"]["start"]
-    except:
-        return ""
-
-def numberv(prop):
-    try:
-        n = prop["number"]
-        if n is None:
-            return ""
-        return str(n)
-    except:
-        return ""
-
-# -------------------------
-# relation title
-# -------------------------
-def get_page_title(page_id):
-    try:
-        url = f"https://api.notion.com/v1/pages/{page_id}"
-        data = notion_get(url)
-        props = data["properties"]
-
-        for k, v in props.items():
-            if v["type"] == "title":
-                return title(v)
-
-        return page_id[:8]
-    except:
-        return ""
-
-def relation(prop):
+def get_relation_simple(prop):
     try:
         arr = prop["relation"]
-        if not arr:
-            return ""
-
-        names = []
-        for r in arr:
-            names.append(get_page_title(r["id"]))
-        return ", ".join(names)
-    except:
-        return ""
-
-# -------------------------
-# rollup real reader
-# -------------------------
-def rollup(prop):
-    try:
-        ru = prop["rollup"]
-
-        if ru["type"] == "array":
-            vals = []
-            for x in ru["array"]:
-                t = x["type"]
-
-                if t == "title":
-                    vals.append(title(x))
-                elif t == "rich_text":
-                    vals.append(rich(x))
-                elif t == "number":
-                    vals.append(numberv(x))
-                elif t == "select":
-                    vals.append(selectv(x))
-                elif t == "multi_select":
-                    vals.append(multiselect(x))
-                elif t == "relation":
-                    vals.append(relation(x))
-            return ", ".join([v for v in vals if v])
-
-        if ru["type"] == "number":
-            return str(ru["number"])
-
+        if len(arr) > 0:
+            return arr[0]["id"][:8]
         return ""
     except:
         return ""
 
-# -------------------------
-# universal reader
-# -------------------------
-def val(props, name):
-    if name not in props:
+def get_value(props, key):
+
+    if key not in props:
         return ""
 
-    p = props[name]
+    p = props[key]
     t = p["type"]
 
     if t == "title":
-        return title(p)
+        return get_title(p)
 
     if t == "rich_text":
-        return rich(p)
-
-    if t == "number":
-        return numberv(p)
+        return get_rich(p)
 
     if t == "select":
-        return selectv(p)
-
-    if t == "multi_select":
-        return multiselect(p)
-
-    if t == "date":
-        return datev(p)
+        return get_select(p)
 
     if t == "relation":
-        return relation(p)
-
-    if t == "rollup":
-        return rollup(p)
-
-    if t == "formula":
-        try:
-            f = p["formula"]
-            if f["type"] == "string":
-                return f["string"] or ""
-            if f["type"] == "number":
-                return str(f["number"])
-        except:
-            return ""
+        return get_relation_simple(p)
 
     return ""
 
 # =========================
-# SEARCH
+# FAST SEARCH
 # =========================
-def search_notion(keyword):
+def search_person(keyword):
 
     url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
 
-    all_rows = []
-    cursor = None
+    payload = {
+        "page_size": 10,
+        "filter": {
+            "or": [
 
-    while True:
+                {
+                    "property": "เลขบัตรประชาชน",
+                    "rich_text": {
+                        "contains": keyword
+                    }
+                },
 
-        payload = {
-            "page_size": 100
+                {
+                    "property": "ชื่อ",
+                    "title": {
+                        "contains": keyword
+                    }
+                },
+
+                {
+                    "property": "Case id",
+                    "rich_text": {
+                        "contains": keyword
+                    }
+                },
+
+                {
+                    "property": "ที่อยู่ตามบัตรประชาชน",
+                    "rich_text": {
+                        "contains": keyword
+                    }
+                }
+
+            ]
         }
+    }
 
-        if cursor:
-            payload["start_cursor"] = cursor
-
-        data = notion_post(url, payload)
-
-        rows = data.get("results", [])
-        all_rows.extend(rows)
-
-        if data.get("has_more"):
-            cursor = data.get("next_cursor")
-        else:
-            break
-
-    # keyword filter
-    found = []
-
-    kw = keyword.strip().lower()
-
-    for row in all_rows:
-        props = row["properties"]
-
-        text_pool = [
-            val(props, "เลขบัตรประชาชน"),
-            val(props, "ชื่อ"),
-            val(props, "เครือข่าย"),
-            val(props, "Case id"),
-            val(props, "จังหวัด"),
-            val(props, "จังหวัดตามบัตร"),
-            val(props, "สถานะ"),
-            val(props, "บทบาทในเครือข่าย"),
-            val(props, "ชื่อเครือข่ายหลัก"),
-            val(props, "หน่วย(Auto)"),
-            val(props, "หน่วย(เชื่อมจริง)")
-        ]
-
-        big = " | ".join(text_pool).lower()
-
-        if kw in big:
-            found.append(row)
-
-    return found
+    data = notion_post(url, payload)
+    return data.get("results", [])
 
 # =========================
-# FORMAT
+# FORMAT RESULT
 # =========================
 def render(rows):
 
@@ -277,76 +171,46 @@ def render(rows):
         return (
             "❌ ไม่พบข้อมูล\n\n"
             "ค้นหาได้จาก:\n"
-            "• เลขบัตร\n"
+            "• เลขบัตรประชาชน\n"
             "• ชื่อ\n"
-            "• จังหวัด\n"
-            "• สถานะ\n"
             "• Case ID\n"
-            "• เครือข่าย"
+            "• ที่อยู่"
         )
 
     msg = f"📊 พบ {len(rows)} รายการ\n\n"
 
-    for i, row in enumerate(rows[:30], start=1):
+    for i, row in enumerate(rows, start=1):
 
         p = row["properties"]
 
-        cid = val(p, "เลขบัตรประชาชน")
-        name = val(p, "ชื่อ")
-        network = val(p, "ชื่อเครือข่ายหลัก")
-        if not network:
-            network = val(p, "เครือข่าย")
-
-        network_code = val(p, "เครือข่าย")
-
-        caseid = val(p, "Case id")
-
-        province = val(p, "จังหวัด")
-        if not province:
-            province = val(p, "จังหวัดตามบัตร")
-
-        addr = val(p, "ที่อยู่ตามบัตรประชาชน")
-
-        status = val(p, "สถานะ")
-
-        role = val(p, "บทบาทในเครือข่าย")
-
-        unit = val(p, "หน่วย(เชื่อมจริง)")
-        if not unit:
-            unit = val(p, "หน่วย(Auto)")
-
-        post = val(p, "ที่อยู่ไปรษณีย์(Auto)")
-
-        sent = val(p, "สถานะการส่ง")
-
-        send_date = val(p, "วันที่ส่ง")
+        cid = get_value(p, "เลขบัตรประชาชน")
+        name = get_value(p, "ชื่อ")
+        caseid = get_value(p, "Case id")
+        addr = get_value(p, "ที่อยู่ตามบัตรประชาชน")
+        status = get_value(p, "สถานะ")
+        network = get_value(p, "เครือข่าย")
+        province = get_value(p, "จังหวัด")
+        role = get_value(p, "บทบาทในเครือข่าย")
 
         msg += (
             f"📌 รายการ {i}\n"
             f"👤 ชื่อ: {name}\n"
             f"🪪 เลขบัตร: {cid}\n"
-            f"🌐 เครือข่ายหลัก: {network}\n"
-            f"🧩 เครือข่าย: {network_code}\n"
+            f"🌐 เครือข่าย: {network}\n"
             f"📁 Case ID: {caseid}\n"
             f"📍 จังหวัด: {province}\n"
             f"🏠 ที่อยู่: {addr}\n"
             f"🎯 สถานะ: {status}\n"
             f"🏷 บทบาท: {role}\n"
-            f"👮 หน่วยรับผิดชอบ: {unit}\n"
-            f"📮 ไปรษณีย์: {post}\n"
-            f"🚚 สถานะการส่ง: {sent}\n"
-            f"📅 วันที่ส่ง: {send_date}\n"
-            f"\n--------------------\n\n"
+            f"\n-----------------\n\n"
         )
 
     msg += (
         "🔎 ค้นหาต่อได้จาก:\n"
         "• เลขบัตร\n"
         "• ชื่อ\n"
-        "• จังหวัด\n"
-        "• สถานะ\n"
         "• Case ID\n"
-        "• เครือข่าย"
+        "• ที่อยู่"
     )
 
     return msg[:4900]
@@ -360,28 +224,28 @@ def webhook():
     body = request.get_json()
 
     try:
-        events = body["events"]
+        events = body.get("events", [])
 
-        for e in events:
+        for event in events:
 
-            if e["type"] != "message":
+            if event["type"] != "message":
                 continue
 
-            if e["message"]["type"] != "text":
+            if event["message"]["type"] != "text":
                 continue
 
-            text = e["message"]["text"].strip()
-            reply_token = e["replyToken"]
+            keyword = event["message"]["text"].strip()
+            reply_token = event["replyToken"]
 
-            rows = search_notion(text)
-            msg = render(rows)
+            rows = search_person(keyword)
+            text = render(rows)
 
-            reply(reply_token, msg)
+            reply_message(reply_token, text)
 
-    except Exception as ex:
-        print(ex)
+    except Exception as e:
+        print("ERROR:", e)
 
-    return "OK"
+    return jsonify({"status": "ok"})
 
 # =========================
 # RUN
