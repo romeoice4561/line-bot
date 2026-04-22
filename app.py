@@ -1,6 +1,8 @@
 # app.py
-# VERSION : FULL DETAIL + FAST + REAL USE
-# LINE BOT + NOTION + RENDER READY
+# ==========================================
+# LINE BOT + NOTION (ULTIMATE FINAL)
+# เร็ว / เสถียร / ดึง Relation จริง / Rollup จริง / ใช้งาน Render ได้เลย
+# ==========================================
 
 import os
 import requests
@@ -8,16 +10,16 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# ==================================================
+# ==========================================
 # ENV
-# ==================================================
+# ==========================================
 LINE_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
-# ==================================================
+# ==========================================
 # HEADERS
-# ==================================================
+# ==========================================
 LINE_HEADERS = {
     "Authorization": f"Bearer {LINE_TOKEN}",
     "Content-Type": "application/json"
@@ -29,68 +31,78 @@ NOTION_HEADERS = {
     "Notion-Version": "2022-06-28"
 }
 
-# ==================================================
+# ==========================================
 # CACHE
-# ==================================================
+# ==========================================
 PAGE_CACHE = {}
 
-# ==================================================
-# BASIC
-# ==================================================
+# ==========================================
+# HOME
+# ==========================================
 @app.route("/", methods=["GET"])
 def home():
     return "BOT RUNNING OK"
 
-# ==================================================
+# ==========================================
 # LINE REPLY
-# ==================================================
+# ==========================================
 def reply(reply_token, text):
-    url = "https://api.line.me/v2/bot/message/reply"
-
-    payload = {
-        "replyToken": reply_token,
-        "messages": [
-            {
+    try:
+        payload = {
+            "replyToken": reply_token,
+            "messages": [{
                 "type": "text",
                 "text": text[:4900]
-            }
-        ]
-    }
+            }]
+        }
 
-    requests.post(url, headers=LINE_HEADERS, json=payload, timeout=10)
+        requests.post(
+            "https://api.line.me/v2/bot/message/reply",
+            headers=LINE_HEADERS,
+            json=payload,
+            timeout=4
+        )
+    except Exception as e:
+        print("LINE ERROR:", e)
 
-# ==================================================
-# NOTION
-# ==================================================
+# ==========================================
+# NOTION API
+# ==========================================
 def notion_post(url, payload):
-    r = requests.post(
-        url,
-        headers=NOTION_HEADERS,
-        json=payload,
-        timeout=12
-    )
-    return r.json()
+    try:
+        r = requests.post(
+            url,
+            headers=NOTION_HEADERS,
+            json=payload,
+            timeout=7
+        )
+        return r.json()
+    except:
+        return {}
 
 def notion_get(url):
-    r = requests.get(
-        url,
-        headers=NOTION_HEADERS,
-        timeout=12
-    )
-    return r.json()
+    try:
+        r = requests.get(
+            url,
+            headers=NOTION_HEADERS,
+            timeout=6
+        )
+        return r.json()
+    except:
+        return {}
 
-# ==================================================
+# ==========================================
 # TEXT READERS
-# ==================================================
+# ==========================================
 def title(prop):
     try:
-        return "".join([x["plain_text"] for x in prop["title"]]).strip()
+        return "".join(x["plain_text"] for x in prop["title"]).strip()
     except:
         return ""
 
 def rich(prop):
     try:
-        return "".join([x["plain_text"] for x in prop["rich_text"]]).strip()
+        return "".join(x["plain_text"] for x in prop["rich_text"]).strip()
     except:
         return ""
 
@@ -100,33 +112,35 @@ def selectv(prop):
     except:
         return ""
 
-def datev(prop):
+def multi(prop):
     try:
-        return prop["date"]["start"]
+        return ", ".join(x["name"] for x in prop["multi_select"])
     except:
         return ""
 
 def numberv(prop):
     try:
         n = prop["number"]
-        if n is None:
-            return ""
-        return str(n)
+        return "" if n is None else str(n)
     except:
         return ""
 
-# ==================================================
-# PAGE TITLE CACHE
-# ==================================================
+def datev(prop):
+    try:
+        return prop["date"]["start"]
+    except:
+        return ""
+
+# ==========================================
+# PAGE TITLE (Relation Page)
+# ==========================================
 def get_page_title(page_id):
 
     if page_id in PAGE_CACHE:
         return PAGE_CACHE[page_id]
 
     try:
-        url = f"https://api.notion.com/v1/pages/{page_id}"
-        data = notion_get(url)
-
+        data = notion_get(f"https://api.notion.com/v1/pages/{page_id}")
         props = data["properties"]
 
         txt = ""
@@ -142,34 +156,32 @@ def get_page_title(page_id):
     except:
         return ""
 
-# ==================================================
+# ==========================================
 # RELATION
-# ==================================================
+# ==========================================
 def relation(prop):
-
     try:
         arr = prop["relation"]
 
-        if not arr:
-            return ""
-
         vals = []
+        for x in arr[:20]:
+            t = get_page_title(x["id"])
+            if t:
+                vals.append(t)
 
-        for x in arr[:5]:
-            vals.append(get_page_title(x["id"]))
-
-        return ", ".join([v for v in vals if v])
-
+        return ", ".join(vals)
     except:
         return ""
 
-# ==================================================
+# ==========================================
 # ROLLUP
-# ==================================================
+# ==========================================
 def rollup(prop):
-
     try:
         ru = prop["rollup"]
+
+        if ru["type"] == "number":
+            return str(ru["number"])
 
         if ru["type"] == "array":
 
@@ -191,19 +203,19 @@ def rollup(prop):
                 elif t == "number":
                     vals.append(numberv(x))
 
-            return ", ".join([v for v in vals if v])
+                elif t == "date":
+                    vals.append(datev(x))
 
-        if ru["type"] == "number":
-            return str(ru["number"])
+            return ", ".join(v for v in vals if v)
 
         return ""
 
     except:
         return ""
 
-# ==================================================
-# UNIVERSAL VALUE
-# ==================================================
+# ==========================================
+# UNIVERSAL READ
+# ==========================================
 def val(props, key):
 
     if key not in props:
@@ -221,11 +233,14 @@ def val(props, key):
     if t == "select":
         return selectv(p)
 
-    if t == "date":
-        return datev(p)
+    if t == "multi_select":
+        return multi(p)
 
     if t == "number":
         return numberv(p)
+
+    if t == "date":
+        return datev(p)
 
     if t == "relation":
         return relation(p)
@@ -235,28 +250,28 @@ def val(props, key):
 
     return ""
 
-# ==================================================
-# SEARCH FAST IN NOTION
-# ==================================================
+# ==========================================
+# SEARCH
+# ==========================================
 def search_notion(keyword):
 
     url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
 
     payload = {
-        "page_size": 15,
+        "page_size": 25,
         "filter": {
             "or": [
 
                 {
-                    "property": "เลขบัตรประชาชน",
-                    "rich_text": {
+                    "property": "ชื่อ",
+                    "title": {
                         "contains": keyword
                     }
                 },
 
                 {
-                    "property": "ชื่อ",
-                    "title": {
+                    "property": "เลขบัตรประชาชน",
+                    "rich_text": {
                         "contains": keyword
                     }
                 },
@@ -269,8 +284,15 @@ def search_notion(keyword):
                 },
 
                 {
-                    "property": "ที่อยู่ตามบัตรประชาชน",
+                    "property": "ชื่อเครือข่ายหลัก",
                     "rich_text": {
+                        "contains": keyword
+                    }
+                },
+
+                {
+                    "property": "จังหวัด",
+                    "relation": {
                         "contains": keyword
                     }
                 },
@@ -289,17 +311,17 @@ def search_notion(keyword):
     data = notion_post(url, payload)
     return data.get("results", [])
 
-# ==================================================
+# ==========================================
 # RENDER
-# ==================================================
+# ==========================================
 def render(rows):
 
     if not rows:
         return (
             "❌ ไม่พบข้อมูล\n\n"
             "ค้นหาได้จาก:\n"
-            "• เลขบัตร\n"
             "• ชื่อ\n"
+            "• เลขบัตร\n"
             "• จังหวัด\n"
             "• สถานะ\n"
             "• Case ID\n"
@@ -315,12 +337,9 @@ def render(rows):
         name = val(p, "ชื่อ")
         cid = val(p, "เลขบัตรประชาชน")
         netmain = val(p, "ชื่อเครือข่ายหลัก")
-        net = val(p, "เครือข่าย")
+        network = val(p, "เครือข่าย")
         caseid = val(p, "Case id")
         province = val(p, "จังหวัด")
-        if not province:
-            province = val(p, "จังหวัดตามบัตร")
-
         addr = val(p, "ที่อยู่ตามบัตรประชาชน")
         status = val(p, "สถานะ")
         ship = val(p, "สถานะการส่ง")
@@ -331,39 +350,29 @@ def render(rows):
         role = val(p, "บทบาทในเครือข่าย")
 
         msg += (
-            f"📌 รายการ {i}\n\n"
+            f"📌 รายการ {i}\n"
             f"👤 ชื่อ: {name}\n"
-            f"🪪 เลขบัตร:\n{cid}\n"
-            f"🌐 เครือข่ายหลัก:\n{netmain}\n"
-            f"🧩 เครือข่าย: {net}\n"
+            f"🪪 เลขบัตร: {cid}\n"
+            f"🌐 เครือข่ายหลัก: {netmain}\n"
+            f"🧩 เครือข่าย: {network}\n"
             f"📁 Case ID: {caseid}\n"
             f"📍 จังหวัด: {province}\n"
             f"🏠 ที่อยู่: {addr}\n"
             f"🎯 สถานะ: {status}\n"
             f"🚚 สถานะการส่ง: {ship}\n"
             f"👮 หน่วยรับผิดชอบ: {unit}\n"
-            f"🚓 หน่วย(ย้อนหลัง): {unit2}\n"
+            f"🚓 หน่วยย้อนหลัง: {unit2}\n"
             f"📮 ไปรษณีย์: {post}\n"
             f"📅 วันที่ส่ง: {send_date}\n"
             f"🏷 บทบาท: {role}\n"
-            f"\n------------------------\n\n"
+            f"\n----------------------\n\n"
         )
-
-    msg += (
-        "🔎 ค้นหาต่อได้จาก:\n"
-        "• เลขบัตร\n"
-        "• ชื่อ\n"
-        "• จังหวัด\n"
-        "• สถานะ\n"
-        "• Case ID\n"
-        "• เครือข่าย"
-    )
 
     return msg[:4900]
 
-# ==================================================
+# ==========================================
 # WEBHOOK
-# ==================================================
+# ==========================================
 @app.route("/webhook", methods=["POST"])
 def webhook():
 
@@ -382,18 +391,20 @@ def webhook():
             keyword = event["message"]["text"].strip()
             reply_token = event["replyToken"]
 
+            print("SEARCH:", keyword)
+
             rows = search_notion(keyword)
             msg = render(rows)
 
             reply(reply_token, msg)
 
     except Exception as e:
-        print("ERROR:", e)
+        print("WEBHOOK ERROR:", e)
 
     return jsonify({"status": "ok"})
 
-# ==================================================
+# ==========================================
 # RUN
-# ==================================================
+# ==========================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
