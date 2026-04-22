@@ -1,5 +1,7 @@
 # app.py
-# FINAL WORKING VERSION (ใช้ ENV เดิมของคุณ)
+# FINAL VERSION : LINE BOT + NOTION
+# อ่าน Relation / Rollup เป็นชื่อจริงทั้งหมด
+# ใช้ ENV เดิมของคุณ:
 # DATABASE_ID
 # NOTION_TOKEN
 # LINE_TOKEN
@@ -10,26 +12,35 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
-# ===============================
-# ENV (ตรงกับ Render ของคุณ)
-# ===============================
+# ==================================================
+# ENV
+# ==================================================
 DATABASE_ID = os.getenv("DATABASE_ID", "").strip()
 NOTION_TOKEN = os.getenv("NOTION_TOKEN", "").strip()
 LINE_TOKEN = os.getenv("LINE_TOKEN", "").strip()
 
 NOTION_VERSION = "2022-06-28"
 
-# ===============================
+HEADERS = {
+    "Authorization": f"Bearer {NOTION_TOKEN}",
+    "Notion-Version": NOTION_VERSION,
+    "Content-Type": "application/json"
+}
+
+# cache กันเรียก relation ซ้ำ
+PAGE_CACHE = {}
+
+# ==================================================
 # HOME
-# ===============================
+# ==================================================
 @app.route("/", methods=["GET"])
 def home():
     return "BPP414 BOT RUNNING", 200
 
 
-# ===============================
+# ==================================================
 # WEBHOOK
-# ===============================
+# ==================================================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -52,7 +63,6 @@ def webhook():
             print("SEARCH:", keyword)
 
             result = search_notion(keyword)
-
             reply_line(reply_token, result)
 
         return "OK", 200
@@ -62,37 +72,30 @@ def webhook():
         return "OK", 200
 
 
-# ===============================
+# ==================================================
 # SEARCH NOTION
-# ===============================
+# ==================================================
 def search_notion(keyword):
 
     url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
 
-    headers = {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Notion-Version": NOTION_VERSION,
-        "Content-Type": "application/json"
-    }
-
     payload = {
-        "page_size": 30
+        "page_size": 50
     }
 
-    r = requests.post(url, headers=headers, json=payload, timeout=30)
+    r = requests.post(url, headers=HEADERS, json=payload, timeout=30)
 
     if r.status_code != 200:
         print("NOTION ERROR:", r.text)
         return "❌ เชื่อม Notion ไม่สำเร็จ"
 
-    data = r.json()
-    rows = data.get("results", [])
+    rows = r.json().get("results", [])
 
     found = []
 
     for row in rows:
         props = row.get("properties", {})
-        text_all = all_text(props).lower()
+        text_all = collect_all_text(props).lower()
 
         if keyword.lower() in text_all:
             found.append(format_row(props))
@@ -103,26 +106,27 @@ def search_notion(keyword):
     return f"📊 พบ {len(found)} รายการ\n\n" + "\n\n------------------\n\n".join(found[:10])
 
 
-# ===============================
+# ==================================================
 # รวมข้อความทุกคอลัมน์
-# ===============================
-def all_text(props):
+# ==================================================
+def collect_all_text(props):
     arr = []
 
-    for k, v in props.items():
+    for _, v in props.items():
         arr.append(read_prop(v))
 
     return " ".join(arr)
 
 
-# ===============================
+# ==================================================
 # อ่าน property ทุกชนิด
-# ===============================
+# ==================================================
 def read_prop(p):
 
     try:
         t = p["type"]
 
+        # ------------------------
         if t == "title":
             return "".join(x["plain_text"] for x in p["title"])
 
@@ -144,10 +148,58 @@ def read_prop(p):
         if t == "date":
             return p["date"]["start"] if p["date"] else ""
 
-        if t == "relation":
-            return " ".join(x["id"] for x in p["relation"])
+        if t == "checkbox":
+            return "ใช่" if p["checkbox"] else "ไม่"
 
+        if t == "url":
+            return p["url"] or ""
+
+        if t == "phone_number":
+            return p["phone_number"] or ""
+
+        if t == "email":
+            return p["email"] or ""
+
+        # ==================================================
+        # RELATION -> อ่านชื่อจริง
+        # ==================================================
+        if t == "relation":
+
+            vals = []
+
+            for item in p["relation"]:
+                page_id = item["id"]
+                vals.append(get_page_title(page_id))
+
+            return " ".join([x for x in vals if x])
+
+        # ==================================================
+        # ROLLUP
+        # ==================================================
+        if t == "rollup":
+
+            ru = p["rollup"]
+
+            if ru["type"] == "number":
+                return str(ru["number"] or "")
+
+            if ru["type"] == "date":
+                return str(ru["date"] or "")
+
+            if ru["type"] == "array":
+
+                vals = []
+
+                for item in ru["array"]:
+                    vals.append(read_prop(item))
+
+                return " ".join([x for x in vals if x])
+
+        # ==================================================
+        # FORMULA
+        # ==================================================
         if t == "formula":
+
             f = p["formula"]
 
             if f["type"] == "string":
@@ -156,17 +208,8 @@ def read_prop(p):
             if f["type"] == "number":
                 return str(f["number"] or "")
 
-        if t == "rollup":
-            ru = p["rollup"]
-
-            if ru["type"] == "number":
-                return str(ru["number"] or "")
-
-            if ru["type"] == "array":
-                vals = []
-                for x in ru["array"]:
-                    vals.append(read_prop(x))
-                return " ".join(vals)
+            if f["type"] == "boolean":
+                return "ใช่" if f["boolean"] else "ไม่"
 
         return ""
 
@@ -174,9 +217,48 @@ def read_prop(p):
         return ""
 
 
-# ===============================
-# จัดข้อความแสดงผล
-# ===============================
+# ==================================================
+# เปิด page relation แล้วอ่าน title จริง
+# ==================================================
+def get_page_title(page_id):
+
+    if page_id in PAGE_CACHE:
+        return PAGE_CACHE[page_id]
+
+    try:
+        url = f"https://api.notion.com/v1/pages/{page_id}"
+
+        r = requests.get(url, headers=HEADERS, timeout=15)
+
+        if r.status_code != 200:
+            return ""
+
+        data = r.json()
+        props = data.get("properties", {})
+
+        # หา title property
+        for _, v in props.items():
+
+            if v["type"] == "title":
+                title = "".join(x["plain_text"] for x in v["title"])
+                PAGE_CACHE[page_id] = title
+                return title
+
+            # เผื่อ number เป็นชื่อหน่วย 414
+            if v["type"] == "number":
+                title = str(v["number"])
+                PAGE_CACHE[page_id] = title
+                return title
+
+        return ""
+
+    except:
+        return ""
+
+
+# ==================================================
+# จัดรูปแบบข้อความ
+# ==================================================
 def format_row(props):
 
     def val(name):
@@ -200,9 +282,9 @@ def format_row(props):
     return "\n".join(lines)
 
 
-# ===============================
-# REPLY LINE
-# ===============================
+# ==================================================
+# ส่งกลับ LINE
+# ==================================================
 def reply_line(reply_token, text):
 
     url = "https://api.line.me/v2/bot/message/reply"
@@ -222,13 +304,13 @@ def reply_line(reply_token, text):
         ]
     }
 
-    r = requests.post(url, headers=headers, json=payload, timeout=15)
+    r = requests.post(url, headers=headers, json=payload, timeout=20)
 
     print("LINE REPLY:", r.status_code, r.text)
 
 
-# ===============================
+# ==================================================
 # MAIN
-# ===============================
+# ==================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
